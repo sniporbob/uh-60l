@@ -98,6 +98,10 @@ function post_initialize()
         Sound_Player(sndhost_cockpit, "APR39/unknown", "SND_INST_APR39_UNKNOWN", SOUND_ONCE),
         Sound_Player(sndhost_cockpit, "APR39/zu", "SND_INST_APR39_ZU", SOUND_ONCE),
         Sound_Player(sndhost_cockpit, "APR39/zu", "SND_INST_APR39_ZU2", SOUND_ONCE),
+
+        -- ARC-201
+        Sound_Player(sndhost_cockpit, "ARC201/250ms600hzBeep", "SND_INST_ARC201_250MS600HZBEEP", SOUND_ONCE),
+        Sound_Player(sndhost_cockpit, "ARC201/750ms600hzBeep", "SND_INST_ARC201_750MS600HZBEEP", SOUND_ONCE),
     }
 end
 
