@@ -542,7 +542,7 @@ function clearFH(key)
     elseif (tonumber(key) >= 1 and tonumber(key) <= 6) and tonumber(key) ~= presetMode and canEnterData then
         countdownTimer = 7
         displayString = "CLR "..key
-        print_message_to_user(displayString)
+        --print_message_to_user(displayString)
         presets[tonumber(key) + 10] = 0
         blinkWithDelay(0.5,0.25)
         soundWithDelay(0.25,"SND_INST_ARC201_250MS600HZBEEP")
@@ -689,7 +689,7 @@ function updateDisplay() -- refresh the values on the display according to the c
             adjustedText = " Cold"
         else
             adjustedText = formatTrailingUnderscores(displayString, 5)
-            print_message_to_user(presets[presetMode])
+            --print_message_to_user(presets[presetMode])
         end
     elseif displayMode == "loadFH" or displayMode == "displayFH" then
         if string.find(displayString,"FILL") ~= nil then
