@@ -19,6 +19,8 @@ local paramHomingEnabled = get_param_handle("ARC201_FM1_HOMING_ENABLED")
 local FM1paramModulation = get_param_handle("ARC201_FM1_MODULATION")
 local FM1paramFreq = get_param_handle("ARC201FM1param")
 
+local scanRate = 0.3 -- seconds between changing frequencies while scanning, lower (faster) is more realistic but must be high enough for SRS to change and detect a transmissions
+
 local displayString = "30000"
 local manualFreq = 30e6
 local radioDevice = nil
@@ -31,6 +33,12 @@ local countdownTimer = 0 -- countdown until the radio display turns off
 local returnTimer = 0 -- countdown until the radio display goes back to showing frequency
 local blinkTimer = 0 -- countdown for blinking the display off then back on
 local delayTimer = 0 -- countdown for delayed action
+local scanTimer = 0 -- countdown to resume scanning
+local scanPriority = 8 -- preset that gets scanned more often, 0=man, 7=cue, 8=no priority
+local scanPriorityNext = false -- whether or not the next scan should be the priority preset
+local scanCurrent = 0 -- preset that is currently tuned for scanning
+local scanTable = {} -- boolean table to determine which presets are being scanned
+local isScanMode = false -- whether or not radio is in scan mode
 local checkBlink = false -- whether or not blink is occuring
 local checkBlinkWithDelay = false --whether or not a delayed blink is occuring
 local displayTimeoutEnable = false -- whether or not the display blanking timeout is active
@@ -41,6 +49,8 @@ local soundToPlay = nil -- sound that will be played, should be set equal to get
 local displayMode = "none" -- what the display is showing
 local nextDisplayMode = "" -- what will be displayed next after delay
 local FHWorkingMemory = 0 -- temporary working memory for loading/storing/sending hopsets
+
+local ICPselector = 0 -- position of ICP selector knob, 0.2 is FM1, 0.8 is FM2
 
 local startSelfTest = false -- indicator to initiate the self test
 
@@ -68,6 +78,7 @@ function post_initialize()
     elseif birth=="GROUND_COLD" then
         paramDisplayFreq:set("".."@")
     end
+
 end
 
 dev:listen_command(device_commands.fm1PresetSelector)
@@ -99,6 +110,9 @@ dev:listen_command(Keys.fm1PresetSelectorInc)
 dev:listen_command(Keys.fm1PresetSelectorDec)
 dev:listen_command(Keys.fm1PresetSelectorCycle)
 
+dev:listen_command(Keys.fm1SRSrx) -- this "key" is pressed by SRS when receiving on this radio
+dev:listen_command(Keys.ptt) -- the SRS PTT keybind, used by the scan feature to pause scanning
+
 --[[
 dev:listen_command(Keys.fm1PwrSelectorInc)
 dev:listen_command(Keys.fm1PwrSelectorDec)
@@ -107,7 +121,6 @@ dev:listen_command(Keys.fm1fm2ModeSelectorInc)
 dev:listen_command(Keys.fm1fm2ModeSelectorDec)
 dev:listen_command(Keys.fm1fm2ModeSelectorCycle)
 ]]
-
 
 function SetCommand(command,value)
 
@@ -142,10 +155,12 @@ function SetCommand(command,value)
     elseif command == device_commands.fm1PresetSelector then
         presetMode = round(value * 100)
         --updatePresetMode()
+        isScanMode = false
         setDisplayMode("preKnob")
     elseif command == device_commands.fm1ModeSelector then
         rcvMode = round(value * 100)
         --print_message_to_user("Mode displayMode")
+        isScanMode = false
         setDisplayMode("modeKnob")
     elseif command == Keys.fm1PresetSelectorInc and presetMode < 7 then
         dev:performClickableAction(device_commands.fm1PresetSelector, presetMode / 100 + 0.01, false)
@@ -157,6 +172,22 @@ function SetCommand(command,value)
             presetMode = 0
         end
         dev:performClickableAction(device_commands.fm1PresetSelector, presetMode / 100, false)
+    elseif command == Keys.fm1SRSrx then -- this should only ever be done by SRS
+        if value == 1 and isScanMode then
+            if scanTimer >= 0 then -- set the scan timer unless ENT was pushed (set to -1)
+                scanTimer = 2.5
+            end
+            
+            if scanTimer <= 2.2 or displayMode ~= "scanFreq" then -- don't change the display if it's showing the frequency unless there was a short break in RX
+                displayMode = "scanRX"
+            end
+            
+            updateDisplay()
+        end
+    elseif command == Keys.ptt and math.floor(GetDevice("PLT_ICP"):get_argument_value(400) * 5) == 1 then -- the SRS PTT keybind and ICP selector set to radio 1
+        if isScanMode then
+            scanPTT(value)
+        end
     else
         if value > 0 then
             if command == device_commands.fm1Btn1 then
@@ -197,10 +228,13 @@ end
 function keypadInput(key) -- handle keypad presses
     if hasPower then
         -- go set display mode based on function key presses
-        if (pwrMode == 2 or pwrMode == 3 or pwrMode == 5) and (key == "TIME" or key == "ERFOFST" or key == "FREQ" or key == "CLR" or key == "0" or key == "ENT") then
-            setDisplayMode(key)            
+        if (pwrMode == 2 or pwrMode == 3 or pwrMode == 5) and (key == "TIME" or key == "ERFOFST" or key == "FREQ" or key == "CLR" or key == "0" or key == "ENT") and (not isScanMode) then
+            setDisplayMode(key)
+        elseif (pwrMode == 2 or pwrMode == 3 or pwrMode == 5) and (key == "TIME" or key == "ERFOFST") and isScanMode then
+            scanTimer = 2.5
+            setDisplayMode(key)
         end
-        
+
         -- send key presses to the relevant functions based on current displayMode
         if displayMode == "loadSC" then
             loadSC(key)
@@ -216,7 +250,12 @@ function keypadInput(key) -- handle keypad presses
             recallFHWorkingMemory(key)
         elseif displayMode == "storeFHWorkingMemory" then
             storeFHWorkingMemory(key)
+        elseif displayMode == "startScan" then
+            setScanPriority(key)
+        elseif displayMode == "scanMode" or displayMode == "scanFreq" or displayMode == "scanRX" then
+            scanModeAction(key)
         end
+        --print_message_to_user(displayMode)
     end
 end
 
@@ -254,7 +293,7 @@ function setDisplayMode(key) -- logic to set displayMode based on key presses or
         displayTimeoutEnable = false
         updatePresetMode() -- update currently tuned frequency
         --print_message_to_user("displaySC")
-    elseif pwrMode == 5 and (rcvMode == 0 or rcvMode == 1 or ((rcvMode == 2 or rcvMode == 3) and (presetMode == 0 or presetMode == 7))) and (key == "funcKnob" or key == "preKnob" or key == "modeKnob") then
+    elseif pwrMode == 5 and (rcvMode == 0 or rcvMode == 1 or ((rcvMode == 2 or rcvMode == 3) and presetMode == 7)) and (key == "funcKnob" or key == "preKnob" or key == "modeKnob") then
         canEnterData = false
         displayMode = "loadSC"
         
@@ -262,6 +301,17 @@ function setDisplayMode(key) -- logic to set displayMode based on key presses or
             countdownTimer = 7 -- if preset knob is turned, set the countdown to 7sec
         elseif key == "funcKnob" then
             countdownTimer = 1 -- if the function knob is turned, set countdown to 1sec
+        end
+        
+        displayTimeoutEnable = true -- activate the timeout
+        updatePresetMode() -- update currently tuned frequency
+    elseif pwrMode == 5 and (rcvMode == 2 or rcvMode == 3) and (key == "FREQ" or key == "funcKnob" or key == "preKnob" or key == "modeKnob") and presetMode == 0 then
+        canEnterData = false
+        displayMode = "displaySC"
+        if key == "funcKnob" then
+            countdownTimer = 1
+        else
+            countdownTimer = 7
         end
         
         displayTimeoutEnable = true -- activate the timeout
@@ -300,13 +350,16 @@ function setDisplayMode(key) -- logic to set displayMode based on key presses or
         displayTimeoutEnable = true -- activate the timeout
         updatePresetMode() -- update currently tuned frequency
         --print_message_to_user("loadFH")
-    elseif pwrMode == 5 and rcvMode == 3 and key == "FREQ" then
+    elseif pwrMode == 5 and rcvMode == 3 and presetMode ~= 0 and key == "FREQ" then
         displayMode = "loadFH"
         countdownTimer = 7
         updatePresetMode()
     elseif pwrMode == 5 and rcvMode == 3 and key == "ENT" and not (canEnterData) then
         displayMode = "storeFHWorkingMemory"
+    elseif (pwrMode == 2 or pwrMode == 3) and (rcvMode == 2 or rcvMode == 3) and key == "ENT" and presetMode == 7 then
+        displayMode = "startScan"
     end
+--print_message_to_user(displayMode)
 end
 
 function loadSC(key) -- load single channel frequencies into a preset
@@ -559,7 +612,8 @@ function recallFHWorkingMemory(key)
         countdownTimer = 7
     elseif (tonumber(key) >= 1 and tonumber(key) <= 6) and canEnterData then
         displayString = "Hid "..key
-        blinkWithDelay(0.25,0.25,"FHWorkingMemory_HF")
+        blinkWithDelay(0.5,0.25,"FHWorkingMemory_HF")
+        soundWithDelay(0.25,"SND_INST_ARC201_250MS600HZBEEP")
         FHWorkingMemory = presets[tonumber(key) + 10]
         canEnterData = false
         displayTimeoutEnable = false
@@ -575,13 +629,201 @@ function storeFHWorkingMemory(key)
         canEnterData = true
     elseif (tonumber(key) >= 1 and tonumber(key) <= 6) and canEnterData then
         displayString = "Sto "..key
-        blinkWithDelay(0.25,0.25)
+        blinkWithDelay(0.5,0.25)
+        soundWithDelay(0.25,"SND_INST_ARC201_250MS600HZBEEP")
         presets[tonumber(key) + 10] = FHWorkingMemory
         canEnterData = false
         displayTimeoutEnable = true
         countdownTimer = 7
     end
     updateDisplay()
+end
+
+function setScanPriority(key)
+    if key == "ENT" then
+        displayString = "SCAN"
+        returnTimeoutEnable = true
+        returnTimer = 7
+        canEnterData = true
+    elseif tonumber(key) <= 8 and canEnterData then
+        canEnterData = false
+        returnTimeoutEnable = false
+        
+        if presets[tonumber(key)] == 0 then -- can't set an empty preset as priority
+            displayMode = "displaySC"
+        else
+            scanPriority = tonumber(key) -- set the preset that will be scanned more frequently, 0=man, 7=cue, 8=no priority
+            if scanPriority == 8 then
+                scanCurrent = 0
+                scanPriorityNext = true
+            else
+                scanCurrent = scanPriority
+                scanPriorityNext = false
+            end
+            isScanMode = true
+            displayMode = "scanMode"
+            scanTimer = scanRate
+
+            -- enable scanning on all non-zero presets
+            if presets[0] ~= 0 then
+                scanTable[0] = true
+            else
+                scanTable[0] = false
+            end
+            
+            if presets[1] ~= 0 then
+                scanTable[1] = true
+            else
+                scanTable[1] = false
+            end
+            
+            if presets[2] ~= 0 then
+                scanTable[2] = true
+            else
+                scanTable[2] = false
+            end
+            
+            if presets[3] ~= 0 then
+                scanTable[3] = true
+            else
+                scanTable[3] = false
+            end
+            
+            if presets[4] ~= 0 then
+                scanTable[4] = true
+            else
+                scanTable[4] = false
+            end
+            
+            if presets[5] ~= 0 then
+                scanTable[5] = true
+            else
+                scanTable[5] = false
+            end
+            
+            if presets[6] ~= 0 then
+                scanTable[6] = true
+            else
+                scanTable[6] = false
+            end
+            
+            if presets[7] ~= 0 then
+                scanTable[7] = true
+            else
+                scanTable[7] = false
+            end
+        end
+    end
+    updateDisplay()
+end
+
+function scanModeAction(key)
+    if key == "ENT" then
+        scanTimer = -1 -- immediately go to next preset
+    elseif tonumber(key) ~= nil then -- need to check for nil first due to text strings breaking number comparison
+        if tonumber(key) <= 7 then
+            scanTimer = 2.5
+            scanCurrent = tonumber(key) -- set scan to this preset
+            scanTable[scanCurrent] = true -- re-enable scanning of this preset
+            setFrequency(presets[scanCurrent] * 1e6) -- set freq to the preset
+            scanPriorityNext = true
+            displayMode = "scanRX"
+            updateDisplay()
+        end
+    elseif key == "FREQ" then
+        scanTimer = 2.5
+        displayMode = "scanFreq"
+        if scanPriorityNext == true then
+            displayString = tostring(presets[scanCurrent] * 1e3)
+        else
+            displayString = tostring(presets[scanPriority] * 1e3)
+        end
+        updateDisplay()
+    elseif key == "CLR" then
+        scanTimer = 2.5
+        if scanPriorityNext == true and scanCurrent ~= scanPriority then -- check this because it's not possible to clear the priority preset
+            scanTable[scanCurrent] = false
+            displayMode = "scanCLR"
+        end
+        updateDisplay()
+    end
+end
+
+function scanUpdate()
+    if scanTimer <= 0 then -- time to change preset
+        displayMode = "scanMode" -- put SCAN# back on the display
+        updateDisplay()
+
+        -- scanCurrent = scanCurrent + 1 -- advance to next
+        -- if scanCurrent > 7 then -- if next is beyond the Cue preset, return to start
+            -- scanCurrent = 0
+        -- end
+        -- while (scanTable[scanCurrent] == false) do -- advance to next again if we're not scanning this preset
+            -- scanCurrent = scanCurrent + 1
+            -- if scanCurrent > 7 then
+                -- scanCurrent = 0
+            -- end
+        -- end
+        
+        if scanPriority == 8 then -- there's no priority preset
+            scanPriorityNext = true -- due to poor coding, needed here for some other logic
+            scanNextPreset() -- pick the next preset we're scanning
+            setFrequency(presets[scanCurrent] * 1e6) -- set freq to the next preset
+        else -- there is a priority, so alternate between priority and next scanned preset
+            if scanPriorityNext == false then -- the priority was being scanned, so scan the next non priority preset
+                scanNextPreset() -- pick the next preset we're scanning
+                setFrequency(presets[scanCurrent] * 1e6) -- set freq to the next preset
+                scanPriorityNext = true -- next time scan the priority channel
+            else -- a non priority was being scanned, so scan the priority
+                setFrequency(presets[scanPriority] * 1e6) -- set freq back to the priority
+                scanPriorityNext = false -- next time don't scan the priority channel
+            end
+        end
+        
+        scanTimer = scanRate -- hold on the new freq for a short while to detect transmissions
+    else
+        scanTimer = scanTimer - update_time_step
+    end
+end
+
+function scanNextPreset() -- sets the next preset to be scanned equal to scanCurrent
+    local loopCount = 0 -- ensure while loop runs one time, but make sure we don't get stuck in a loop somehow
+    
+    while ((loopCount == 0 or scanTable[scanCurrent] == false or scanCurrent == scanPriority) and loopCount < 10) do -- advance to next, ensure preset is being scanned and is not the priority preset
+        scanCurrent = scanCurrent + 1
+        if scanCurrent > 7 then -- once preset reaches CUE, go back to MAN
+            scanCurrent = 0
+        end
+        loopCount = loopCount + 1 -- this is our infinite loop safety
+    end
+    
+    if loopCount == 10 then -- something went wrong, so just use the priority preset
+        scanCurrent = scanPriority
+    end
+end
+
+function scanPTT(value)
+    if value == 1.375 then -- if SRS PTT pressed
+        if displayMode == "scanRX" or displayMode == "scanFreq" then -- if already receiving or lockec on a channel from pressing freq
+            scanTimer = 300 -- hold the channel for 5 minutes. Nobody should EVER talk this long. IRL the radio probably has a PTT timeout anyway
+            displayMode = "scanRX" -- transmit and receive have the same display, so reuse it
+        elseif displayMode == "scanMode" then -- if we're just scanning normally
+            if not scanPriorityNext then -- if we're currently on the priority preset
+                scanTimer = 300
+                displayMode = "scanRX"
+            elseif scanPriorityNext and scanPriority ~= 8 then -- if we're not on the priority preset and a priority was chosen
+                scanModeAction(scanPriority) -- set radio to priority preset, this must come first
+                scanTimer = 300 -- this has to come after or else scanModeAction will override it to 2.5 second
+                displayMode = "scanRX"
+            else -- radio not locked to a channel and there was no priority preset chosen, so it's going to stop wherever it's at to transmit
+                scanTimer = 300
+                displayMode = "scanRX"
+            end
+        end
+        updateDisplay()
+    elseif value == 1.25 then -- if SRS PTT button released
+        scanTimer = 2.5 -- scanning will resume in 2.5 sec
+    end
 end
 
 function funcSelfTest()
@@ -716,6 +958,20 @@ function updateDisplay() -- refresh the values on the display according to the c
         adjustedText = formatTrailingUnderscores(displayString,5)
     elseif displayMode == "FHWorkingMemory_HF" then
         adjustedText = "HF"..FHWorkingMemory
+    elseif displayMode == "startScan" then
+        adjustedText = formatTrailingUnderscores(displayString,5)
+    elseif displayMode == "scanMode" then
+        adjustedText = "SCAN"..tostring(scanPriority)
+    elseif displayMode == "scanRX" then
+        if scanPriorityNext == true then
+            adjustedText = formatPrecedingSpaces("CH "..tostring(scanCurrent),5)
+        else
+            adjustedText = formatPrecedingSpaces("CH "..tostring(scanPriority),5)
+        end
+    elseif displayMode == "scanFreq" then
+        adjustedText = displayString
+    elseif displayMode == "scanCLR" then
+        adjustedText = "CLR "..tostring(scanCurrent)
     end
     
     if hasPower then
@@ -741,7 +997,12 @@ function checkReturnTimeout() -- function to check if the return timeout has rea
     if returnTimer <= 0 then
         returnTimeoutEnable = false
         canEnterData = false
-        setDisplayMode("funcKnob")
+        if not isScanMode then
+            setDisplayMode("funcKnob")
+        elseif isScanMode then
+            displayMode = "scanMode"
+            updateDisplay()
+        end
     end
     returnTimer = returnTimer - update_time_step
 end
@@ -869,6 +1130,10 @@ function update()
         end
     end
 	
+    if isScanMode then
+        scanUpdate()
+    end
+    
     if checkBlinkWithDelay then -- if delayed blink is occuring, check it
         blinkWithDelay()
     elseif checkBlink then -- if blink is occuring, check it
