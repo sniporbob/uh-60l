@@ -880,7 +880,7 @@ function updatePresetMode() -- tune the radio based on the preset selected, and 
         else
             setFrequency((35.002 + (presets[presetMode + 10] * 0.005)) * 1e6) -- pick freqs outside of 5khz spacing so that it can't be tuned in SC
         end
-        FM1paramModulation:set(4)
+        FM1paramModulation:set(7)
     end
     
     if presets[presetMode] == 0 then -- if the preset freq is 0, put FILL on the display
