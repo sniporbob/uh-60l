@@ -598,7 +598,7 @@ function clearFH(key)
         --print_message_to_user(displayString)
         presets[tonumber(key) + 10] = 0
         blinkWithDelay(0.5,0.25)
-        soundWithDelay(0.25,"SND_INST_ARC201_250MS600HZBEEP")
+        soundWithDelay(0.25,"SND_INST_ARC201FM1_250MS600HZBEEP")
         canEnterData = false
     end
     updateDisplay()
@@ -613,7 +613,7 @@ function recallFHWorkingMemory(key)
     elseif (tonumber(key) >= 1 and tonumber(key) <= 6) and canEnterData then
         displayString = "Hid "..key
         blinkWithDelay(0.5,0.25,"FHWorkingMemory_HF")
-        soundWithDelay(0.25,"SND_INST_ARC201_250MS600HZBEEP")
+        soundWithDelay(0.25,"SND_INST_ARC201FM1_250MS600HZBEEP")
         FHWorkingMemory = presets[tonumber(key) + 10]
         canEnterData = false
         displayTimeoutEnable = false
@@ -630,7 +630,7 @@ function storeFHWorkingMemory(key)
     elseif (tonumber(key) >= 1 and tonumber(key) <= 6) and canEnterData then
         displayString = "Sto "..key
         blinkWithDelay(0.5,0.25)
-        soundWithDelay(0.25,"SND_INST_ARC201_250MS600HZBEEP")
+        soundWithDelay(0.25,"SND_INST_ARC201FM1_250MS600HZBEEP")
         presets[tonumber(key) + 10] = FHWorkingMemory
         canEnterData = false
         displayTimeoutEnable = true
@@ -833,7 +833,7 @@ function funcSelfTest()
         startSelfTest = false
         displayMode = "selfTest"
         displayTimeoutEnable = true
-        playSound("SND_INST_ARC201_750MS600HZBEEP",true) -- halt sound
+        playSound("SND_INST_ARC201FM1_750MS600HZBEEP",true) -- halt sound
         --print_message_to_user(countdownTimer)
     elseif countdownTimer > 0 then
         --countdownTimer = countdownTimer - update_time_step -- decrement the timer
@@ -856,7 +856,7 @@ function funcSelfTest()
         -- FAIL7 fault with interface between remote head and radio, or between radio control panel and radio
         -- FAIL8 fault with control unit or control panel
         displayString = "Good "
-        playSound("SND_INST_ARC201_750MS600HZBEEP")
+        playSound("SND_INST_ARC201FM1_750MS600HZBEEP")
     --elseif countdownTimer <= 0 then
         -- You're still here? It's over. Go home. Go.
         --displayString = ""
