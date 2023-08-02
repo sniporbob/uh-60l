@@ -250,7 +250,7 @@ function keypadInput(key) -- handle keypad presses
             storeFHWorkingMemory(key)
         elseif displayMode == "startScan" then
             setScanPriority(key)
-        elseif displayMode == "scanMode" or displayMode == "scanFreq" or displayMode == "scanRX" then
+        elseif displayMode == "scanMode" or displayMode == "scanFreq" or displayMode == "scanRX" or displayMode == "scanCLR" then
             scanModeAction(key)
         end
     end
@@ -745,6 +745,7 @@ function scanModeAction(key)
         if scanPriorityNext == true and scanCurrent ~= scanPriority then -- check this because it's not possible to clear the priority preset
             scanTable[scanCurrent] = false
             displayMode = "scanCLR"
+            setFrequency(0)
         end
         updateDisplay()
     end
