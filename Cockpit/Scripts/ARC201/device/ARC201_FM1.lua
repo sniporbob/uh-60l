@@ -59,12 +59,12 @@ function post_initialize()
     if presets[0] == nil then
         presets[0] = 30
     end
-    presets[11]=111
-    presets[12]=222
-    presets[13]=333
-    presets[14]=444
-    presets[15]=555
-    presets[16]=666
+    presets[11]=101
+    presets[12]=244
+    presets[13]=316
+    presets[14]=420
+    presets[15]=588
+    presets[16]=690
     FM1paramModulation:set(1)
     dev:performClickableAction(device_commands.fm1Volume, 1, false)
     dev:performClickableAction(device_commands.fm1ModeSelector, 0.01, false)
